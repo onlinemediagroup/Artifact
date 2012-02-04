@@ -1,0 +1,9 @@
+{level, details}.
+{incl_mods, [
+    artifact_config, artifact_log, artifact_hash, artifact_store, artifact_stat, artifact_version,
+    artifact_connection, artifact_sync, artifact_membership, artifact_coordinator,
+    artifact_tcp_server,
+    artifact_tcp_server_supervisor, artifact_tcp_server_acceptor, artifact_tcp_server_monitor,
+    artifact_rpc, artifact_memcache
+]}.
+
