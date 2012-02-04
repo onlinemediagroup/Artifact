@@ -6,6 +6,21 @@
 % that you keep it real
 % mixrank ------   2012
 
+%% @copyright 2012 Zephyr Pellerin
+
+%% @reference Amazon Dynamo
+
+%% @author Zephyr Pellerin <zephyr@mixrank.com>
+
+
+%% @doc A simple erlang distributed key value store.
+
+-module(vclock).
+
+-author('Justin Sheehy <justin@basho.com>').
+-author('Andy Gross <andy@basho.com>').
+
+
 -module(artifact).
 -behaviour(application).
 
