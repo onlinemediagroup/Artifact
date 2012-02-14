@@ -26,39 +26,39 @@
 ]).
 
 -include("artifact.hrl").
--record(state, {number_of_tables, tables}).
+
+-record(state, {tables, table_list}).
 
 start_link(Server) ->
     gen_server:start_link({local, Server}, ?MODULE, [], _Opts = []).
 
 init(_Args) ->
-    Dir = artifact_config:get(dets_dir),
-    NumberOfTables = artifact_config:get(number_of_tables),
-    Tables =
+    [Dir, TableNum] =artifact_config:get([dets_dir, dets_tables]),
+    TableList =
         lists:map(
           fun(I) ->
                   Name = list_to_atom(atom_to_list(?MODULE) ++ "_" ++ integer_to_list(I)),
                   File = Dir ++ "/" ++ integer_to_list(I),
-                  case dets:open_file(Name, [{type, set}, {keypos, 2}, {file, File}]) of
+                  case dets:open_file(Name, [{type, bag}, {keypos, 2}, {file, File}]) of
                       {ok, Table} -> {I, Table};
                       {error, Reason} -> ?info(Reason),
                                          exit(Reason)
                   end
           end,
-          lists:seq(1, NumberOfTables)
+          lists:seq(1, TableNum)
          ),
-    {ok, #state{number_of_tables = NumberOfTables, tables = Tables}}.
+    {ok, #state{tables = TableNum, table_list = TableList}}.
 
 terminate(_Reason, State) ->
     lists:foreach(
       fun({_I, Table}) -> dets:close(Table) end,
-      State#state.tables
+      State#state.table_list
      ),
     ok.
 
 bucket_to_table(Bucket, State) ->
-    I = Bucket rem State#state.number_of_tables + 1,
-    proplists:get_value(I, State#state.tables).
+    I = Bucket rem State#state.tables + 1,
+    proplists:get_value(I, State#state.table_list).
 
 do_list(Bucket, State) ->
     Table = bucket_to_table(Bucket, State),
@@ -79,56 +79,65 @@ do_list(Bucket, State) ->
         vector_clocks = '$3',
         checksum      = '$4'
     }}],
-    ListOfData = dets:select(Table, [{Head, Cond, Body}]),
-    {reply, {list_of_data, ListOfData}, State}.
+    KeyList = dets:select(Table, [{Head, Cond, Body}]),
+    {reply, {ok, KeyList}, State}.
+
+%% No specific reason for this code change, just want to look like
+%% standard OTP code
 
 do_get(#data{key=Key, bucket=Bucket} = _Data, State) ->
     Table = bucket_to_table(Bucket, State),
     case dets:lookup(Table, Key) of
-        [Data] -> {reply, Data, State};
-        _      -> {reply, undefined, State}
+        []      -> {reply, undefined, State};
+        StoredDataList -> {reply, StoredDataList, State}
     end.
 
 do_put(Data, State) when is_record(Data, data) ->
     Table = bucket_to_table(Data#data.bucket, State),
-    case dets:lookup(Table, Data#data.key) of
-        [StoredData] ->
-            case vclock:descends(Data#data.vector_clocks, StoredData#data.vector_clocks) of
-                true -> insert_and_reply(Data, Table, State);
-                _ -> {reply, {error, "stale or concurrent state found in artifact_store"}, State}
-            end;
-        _ -> insert_and_reply(Data, Table, State)
-    end.
-
-insert_and_reply(Data, Table, State) ->
-    dets:insert(Table, Data),
-    dets:sync(Table),
+    insert_and_remove(Table, Data, dets:lookup(Table, Data#data.key)),
     {reply, ok, State}.
+
+insert_and_remove(Table, Data, StoredDataList) ->
+    dets:insert(Table, Data),
+    remove_descend_data(Table, Data#data.vector_clocks, StoredDataList),
+    dets:sync(Table).
+
+remove_descend_data(_Table, _Vc, []) ->
+    ok;
+remove_descend_data(Table, Vc, [StoredData|Rest]) ->
+    case vclock:descends(Vc, StoredData#data.vector_clocks) of
+        true -> dets:delete_object(Table, StoredData);
+        _ -> nop
+    end,
+    remove_descend_data(Table, Vc, Rest).
 
 do_delete(#data{key=Key, bucket=Bucket} = _Data, State) ->
     Table = bucket_to_table(Bucket, State),
     case dets:lookup(Table, Key) of
-        [_Data2] ->
+        [] ->
+            {reply, undefined, State};
+        _StoredDataList ->
             dets:delete(Table, Key),
             dets:sync(Table),
-            {reply, ok, State};
-        _ ->
-            {reply, undefined, State}
+            {reply, ok, State}
     end.
 
 info(Name, State) ->
     Values =
         lists:map(
           fun(I) ->
-                  T = proplists:get_value(I, State#state.tables),
+                  T = proplists:get_value(I, State#state.table_list),
                   case Name of
                       bytes -> dets:info(T, file_size);
-                      size  -> dets:info(T, size)
+                      size  -> dets:info(T, size);
+                      _     -> undefined
                   end
           end,
-          lists:seq(1, State#state.number_of_tables)
+          lists:seq(1, State#state.tables)
          ),
     {reply, lists:sum(Values), State}.
+
+%% "Ilya, thats a Giraffe's name!"
 
 handle_call(stop, _From, State) ->
     {stop, normal, stopped, State};

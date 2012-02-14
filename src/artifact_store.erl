@@ -15,6 +15,7 @@
 % IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
 % WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. 
 %
+
 -module(artifact_store).
 
 -export([start_link/0, stop/0]).
@@ -31,13 +32,13 @@ start_link() ->
 
 stop() ->
     gen_server:call(?SERVER, stop).
-list(Bucket) ->
+list(Bucket) when is_integer(Bucket) ->
     gen_server:call(?SERVER, {list, Bucket}).
-get(Data) ->
+get(Data) when is_record(Data, data) ->
     gen_server:call(?SERVER, {get, Data}).
-put(Data) ->
+put(Data) when is_record(Data, data) ->
     gen_server:call(?SERVER, {put, Data}).
-delete(Data) ->
+delete(Data) when is_record(Data, data) ->
     gen_server:call(?SERVER, {delete, Data}).
-info(Name) ->
+info(Name) when is_atom(Name) ->
     gen_server:call(?SERVER, {info, Name}).
