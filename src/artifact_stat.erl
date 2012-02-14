@@ -28,10 +28,11 @@
         ]).
 
 -include("artifact.hrl").
+
 -record(state, {
           boot_time, cmd_get, cmd_set, bytes_read, bytes_write,
-          unreconciled_get, node, quorum,
-          number_of_buckets, number_of_virtual_nodes, store
+          artifact_node, artifact_quorum, artifact_buckets, artifact_virtual_nodes,
+          artifact_store, artifact_unreconciled_get
 }).
 
 -define(SERVER, ?MODULE).
@@ -42,48 +43,40 @@ start_link() ->
 init(_Args) ->
     {Msec, Sec, _Usec} = now(),
     BootTime = 1000000 * Msec + Sec,
-    [LocalNode, N, R, W, NumberOfBuckets, NumberOfVirtualNodes, Store] =
-        artifact_config:get([
-            node, n, r, w, number_of_buckets, number_of_virtual_nodes, store
-        ]),
-    Quorum = join(",", [integer_to_list(X) || X <- [N, R, W]]),
+    [LocalNode, {N,R,W}, BucketNum, VirtualNodeNum, Store] =
+        artifact_config:get([node, quorum, buckets, virtual_nodes, store]),
+    Quorum = string:join([integer_to_list(X) || X <- [N, R, W]], ","),
     {ok, #state{
-       boot_time               = BootTime,
-       cmd_get                 = 0,
-       cmd_set                 = 0,
-       bytes_read              = 0,
-       bytes_write             = 0,
-       unreconciled_get        = array:new([{size, N-1}, {fixed, false},
-                                            {default, [0,0]}]),
-       node                    = LocalNode,
-       quorum                  = Quorum,
-       number_of_buckets       = NumberOfBuckets,
-       number_of_virtual_nodes = NumberOfVirtualNodes,
-       store                   = Store
+       boot_time            = BootTime,
+       cmd_get              = 0,
+       cmd_set              = 0,
+       bytes_read           = 0,
+       bytes_write          = 0,
+       artifact_node             = LocalNode,
+       artifact_quorum           = Quorum,
+       artifact_buckets          = BucketNum,
+       artifact_virtual_nodes    = VirtualNodeNum,
+       artifact_store            = Store,
+       artifact_unreconciled_get = array:new([{size, N-1}, {fixed, false}, {default, [0,0]}])
       }}.
 
 terminate(_Reason, _State) ->
     ok.
 
-join(_Delimiter, [], Acc) ->
-    Acc;
-join(_Delimiter, [Token], Acc) ->
-    Acc ++ Token;
-join(Delimiter, [Token|Rest], Acc) ->
-    join(Delimiter, Rest, Acc ++ Token ++ Delimiter).
-join(Delimiter, List) ->
-    join(Delimiter, List, []).
-
 node_to_list({{A1,A2,A3,A4}, Port}) ->
-    Addr = join(".", [integer_to_list(X) || X <- [A1,A2,A3,A4]]),
+    Addr = string:join([integer_to_list(X) || X <- [A1,A2,A3,A4]], "."),
     Addr ++ ":" ++ integer_to_list(Port).
 
 format_unreconciled_get(UnreconciledGet) ->
-    join(" ",
-         array:foldr(
-           fun(_Index, [UnReconciled, InternalNum], Acc) ->
-                   [io_lib:format("~B(~B)", [UnReconciled, InternalNum]) | Acc]
-           end, [], UnreconciledGet)).
+    lists:flatten(
+      string:join(
+        array:foldr(
+          fun(_Index, [UnReconciled, InternalNum], Acc) ->
+                  [io_lib:format("~B(~B)", [UnReconciled, InternalNum]) | Acc]
+          end, [], UnreconciledGet
+         ), " "
+       )
+     ).
 
 stat(Name, State) ->
     case Name of
@@ -109,8 +102,13 @@ stat(Name, State) ->
             Size = artifact_store:info(size),
             {curr_items, integer_to_list(Size)};
         curr_connections ->
-            Connections = artifact_tcp_server:info(artifact_memcache, curr_connections),
-            {curr_connections, integer_to_list(Connections)};
+            Conns =
+                try
+                    artifact_tcp_server:info(artifact_memcache, curr_connections)
+                catch
+                    exit:{noproc, _} -> 0
+                end,
+            {curr_connections, integer_to_list(Conns)};
         cmd_get ->
             {cmd_get, integer_to_list(State#state.cmd_get)};
         cmd_set ->
@@ -120,28 +118,27 @@ stat(Name, State) ->
         bytes_write ->
             {bytes_write, integer_to_list(State#state.bytes_write)};
         artifact_node ->
-            {artifact_node, node_to_list(State#state.node)};
+            {artifact_node, node_to_list(State#state.artifact_node)};
         artifact_quorum ->
-            {artifact_quorum, State#state.quorum};
-        artifact_number_of_buckets ->
-            NumberOfBuckets = State#state.number_of_buckets,
-            {artifact_number_of_buckets, integer_to_list(NumberOfBuckets)};
-        artifact_number_of_virtual_nodes ->
-            NumberOfVirtualNodes = State#state.number_of_virtual_nodes,
-            {artifact_number_of_virtual_nodes,
-             integer_to_list(NumberOfVirtualNodes)};
+            {artifact_quorum, State#state.artifact_quorum};
+        artifact_buckets ->
+            BucketNum = State#state.artifact_buckets,
+            {artifact_buckets, integer_to_list(BucketNum)};
+        artifact_virtual_nodes ->
+            VirtualNodeNum = State#state.artifact_virtual_nodes,
+            {artifact_virtual_nodes, integer_to_list(VirtualNodeNum)};
         artifact_store ->
-            {artifact_store, atom_to_list(State#state.store)};
+            {artifact_store, atom_to_list(State#state.artifact_store)};
         artifact_curr_nodes ->
-            {node_list, Nodes} = artifact_hash:node_list(),
+            {ok, Nodes} = artifact_hash:node_list(),
             NodesInList = lists:sort([node_to_list(N) || N <- Nodes]),
-            {artifact_curr_nodes, join(" ", NodesInList)};
+            {artifact_curr_nodes, string:join(NodesInList, " ")};
         artifact_unreconciled_get ->
             {artifact_unreconciled_get,
-             format_unreconciled_get(State#state.unreconciled_get)};
+             format_unreconciled_get(State#state.artifact_unreconciled_get)};
 %        artifact_curr_buckets ->
-%            {buckets, Buckets} = artifact_hash:buckets(),
-%            {artifact_curr_buckets, join(" ", [integer_to_list(B) || B <- Buckets])};
+%            {ok, Buckets} = artifact_hash:buckets(),
+%            {artifact_curr_buckets, string:join([integer_to_list(B) || B <- Buckets], " ")};
         erlang_procs ->
             ErlangProcs = erlang:system_info(process_count),
             {erlang_procs, integer_to_list(ErlangProcs)};
@@ -156,10 +153,11 @@ all(State) ->
           [uptime, time, version, bytes,
            curr_items, curr_connections, cmd_get, cmd_set,
            bytes_read, bytes_write,
-           artifact_node, artifact_quorum, artifact_number_of_buckets,
-           artifact_number_of_virtual_nodes, artifact_store, artifact_curr_nodes,
+           artifact_node, artifact_quorum, artifact_buckets,
+           artifact_virtual_nodes, artifact_store, artifact_curr_nodes,
            artifact_unreconciled_get,
-           %artifact_curr_buckets,
+%           artifact_curr_buckets,
+           %% TODO: Other statistics; max_processes, max_connections, intervals
            erlang_procs, erlang_version]
          ),
     {reply, Stats, State}.
@@ -173,8 +171,8 @@ incr_cmd_set(State) ->
     {noreply, State2}.
 
 incr_unreconciled_get(InternalNum, Reconciled, State) ->
-    Old = State#state.unreconciled_get,
-    Index = InternalNum -2,  % index is 0: two versions, 1: three, etc.
+    Old = State#state.artifact_unreconciled_get,
+    Index = InternalNum -2,  %% index is 0: two versions, 1: three, etc.
     [Unreconciled, Internal] = array:get(Index, Old),
     New = array:set(InternalNum -2,
                     case Reconciled of
@@ -182,7 +180,7 @@ incr_unreconciled_get(InternalNum, Reconciled, State) ->
                         _ -> [Unreconciled + 1, Internal + 1]
                     end,
                     Old),
-    State2 = State#state{unreconciled_get = New},
+    State2 = State#state{artifact_unreconciled_get = New},
     {noreply, State2}.
 
 add_bytes_read(Data, State) ->
