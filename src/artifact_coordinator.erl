@@ -18,74 +18,75 @@
 
 -module(artifact_coordinator).
 
--export([route/1]).
--export([start_route/3, map_in_get/4, map_in_put/4, map_in_delete/4]).
+-export([route/2]).
+-export([start_route/4, map_in_get/5, map_in_put/5, map_in_delete/5]).
 
 -include("artifact.hrl").
 
 -define(SERVER, ?MODULE).
 
-dispatch({Type, Data} = _Request) ->
+route(SrcNode, {_Type, Data, _Quorum} = Request) ->
+    Ref = make_ref(),
+    %% The application should exit with a final 0x80 switch.
+    spawn(?MODULE, start_route, [SrcNode, Request, self(), Ref]),
+    receive
+        {Ref, Result} -> Result
+    after ?TIMEOUT ->
+            ?warning(io_lib:format("Routed IO element route(~p) has timed out", [Data#data.key])),
+            []
+    end.
+
+start_route(SrcNode, {_Type, Data, _Quorum} = Request, Pid, Ref) ->
+    {ok, DstNodes} = artifact_hash:find_nodes(Data#data.key),
+    Results =
+        case lists:member(SrcNode, DstNodes) of
+            true -> dispatch(SrcNode, Request);
+            _    -> do_route(DstNodes, SrcNode, Request)
+        end,
+    Pid ! {Ref, Results}.
+
+%% Hack the pl8
+dispatch(SrcNode, {Type, Data, Quorum} = _Request) ->
     case Type of
-        get    -> coordinate_get(Data);
-        put    -> coordinate_put(Data);
-        delete -> coordinate_delete(Data);
+        get    -> coordinate_get(SrcNode, Data, Quorum);
+        put    -> coordinate_put(SrcNode, Data, Quorum);
+        delete -> coordinate_delete(SrcNode, Data, Quorum);
         _Other -> {error, ebadrpc}
     end.
 
-do_route(_Request, []) ->
+do_route([], _SrcNode, _Request) ->
     {error, ebusy};
-do_route({_Type, Data} = Request, [Node|RestNodes]) ->
-    % TODO: introduce TTL, in order to avoid infinite loop
-    case artifact_rpc:route(Node, Request) of
+
+do_route([DstNode|RestNodes], SrcNode, {_Type, Data, _Quorum} = Request) ->
+    case artifact_rpc:route(DstNode, SrcNode, Request) of
         {error, Reason} ->
             ?warning(io_lib:format("do_route(~p, ~p): ~p",
-                                   [Data#data.key, Node, {error, Reason}])),
-            do_route(Request, RestNodes);
+                                   [DstNode, Data#data.key, {error, Reason}])),
+            do_route(RestNodes, SrcNode, Request);
         Results ->
             Results
     end.
 
-start_route({_Type, Data} = Request, Pid, Ref) ->
-    LocalNode = artifact_config:get(node),
-    {nodes, Nodes} = artifact_hash:find_nodes(Data#data.key),
-    Results =
-        case lists:member(LocalNode, Nodes) of
-            true -> dispatch(Request);
-            _    -> do_route(Request, Nodes)
-        end,
-    Pid ! {Ref, Results}.
-
-route({_Type, Data} = Request) ->
-    Ref = make_ref(),
-    % Though don't know the reason, application exits abnormally if it doesn't
-    % spawn the process
-    spawn(?MODULE, start_route, [Request, self(), Ref]),
-    receive
-        {Ref, Result} -> Result
-    after ?TIMEOUT ->
-            ?warning(io_lib:format("route(~p): timeout", [Data#data.key])),
-            []
-    end.
-
-coordinate_get(Data) ->
-    {bucket, Bucket} = artifact_hash:find_bucket(Data#data.key),
-    {nodes,  Nodes } = artifact_hash:find_nodes(Bucket),
+coordinate_get(SrcNode, Data, {N,R,_W}) ->
+    {ok, Bucket} = artifact_hash:find_bucket(Data#data.key),
+    {ok, DstNodes} = artifact_hash:find_nodes(Bucket),
     Data2 = Data#data{bucket=Bucket},
     Ref = make_ref(),
     lists:foreach(
-      fun(Node) -> spawn(?MODULE, map_in_get, [Node, Data2, Ref, self()]) end, % Don't link
-      Nodes
+      fun(DstNode) ->
+              spawn(?MODULE, map_in_get, [DstNode, SrcNode, Data2, Ref, self()])
+      end, 
+      DstNodes
      ),
-    [N, R] = artifact_config:get([n, r]),
     case gather_in_get(Ref, N, R, []) of
         ListOfData when is_list(ListOfData) ->
-            %% TODO: write back recent if multiple versions are found and they can be resolved
+            %% Todo - Writeback if multiple collisions are detected. 
             InternalNum = sets:size(
                             sets:from_list(
                               lists:map(fun(E) -> E#data.vector_clocks end,
                                        ListOfData))),
             ReconciledList = artifact_version:order(ListOfData),
+            %% The reconciliation process should be pretty straitforward 
             if
                 InternalNum > 1 ->
                     artifact_stat:incr_unreconciled_get(
@@ -97,47 +98,63 @@ coordinate_get(Data) ->
             undefined
     end.
 
-map_in_get(Node, Data, Ref, Pid) ->
-    case artifact_rpc:get(Node, Data) of
+map_in_get(DstNode, SrcNode, Data, Ref, Pid) ->
+    case artifact_rpc:get(DstNode, SrcNode, Data) of
         {error, Reason} ->
-%            artifact_membership:check_node(Node),
-            Pid ! {Ref, {error, Reason}};
+%            artifact_membership:check_node(DstNode),
+            Pid ! {Ref, {error, Reason}}
         Other ->
             Pid ! {Ref, Other}
     end.
 
 gather_in_get(_Ref, _N, 0, Results) ->
-    Results;
+    lists:flatten(Results);
 gather_in_get(_Ref, 0, _R, _Results) ->
     {error, enodata};
 gather_in_get(Ref, N, R, Results) ->
     receive
-        {Ref, Data} when is_record(Data, data) ->
-            gather_in_get(Ref, N-1, R-1, [Data|Results]);
+        {Ref, ListOfData} when is_list(ListOfData) ->
+            gather_in_get(Ref, N-1, R-1, [ListOfData|Results]);
         {Ref, undefined} ->
             gather_in_get(Ref, N-1, R-1, Results);
         {Ref, _Other} ->
             gather_in_get(Ref, N-1, R, Results)
     after ?TIMEOUT ->
-            ?warning("gather_in_get/4: timeout"),
+            ?warning("gathering reference results has timed out"),
             Results
     end.
 
-coordinate_put(Data) ->
+
+%%map_in_delete(DstNode, SrcNode, Data, Ref, Pid) ->
+%%    case artifact_rpc:delete(DstNode, SrcNode, Data) of
+%%        {error, Reason} ->
+%%%            artifact_membership:check_node(DstNode),
+%%            Pid ! {Ref, {error, Reason}};
+%%        Other ->
+%%            Pid ! {Ref, Other}
+%%    end.
+%%
+
+
+coordinate_put(SrcNode, Data, {N,_R,W}) ->
     Key   = Data#data.key,
     Flags = Data#data.flags,
     Value = Data#data.value,
-    {bucket, Bucket} = artifact_hash:find_bucket(Key),
-    {nodes,  Nodes } = artifact_hash:find_nodes(Bucket),
+    {ok, Bucket} = artifact_hash:find_bucket(Key),
+    {ok, DstNodes} = artifact_hash:find_nodes(Bucket),
     Ref = make_ref(),
-    Data1 =
+    VcList =
         case artifact_store:get(Data#data{bucket=Bucket}) of
-            PreviousData when is_record(PreviousData, data) ->
-                PreviousData;
+            PreviousDataList when is_list(PreviousDataList) ->
+                lists:map(
+                  fun(PreviousData) ->
+                          PreviousData#data.vector_clocks end,
+                  PreviousDataList);
             undefined ->
-                #data{key=Key, vector_clocks=vclock:fresh()}
+                [vclock:fresh()]
         end,
-    {ok, Data2} = artifact_version:update(Data1),
+    {ok, Data2} = artifact_version:update(
+                    Data#data{vector_clocks = vclock:merge(VcList)}),
     Data3 = Data2#data{
         bucket   = Bucket,
         checksum = erlang:md5(Value),
@@ -145,16 +162,17 @@ coordinate_put(Data) ->
         value    = Value
     },
     lists:foreach(
-      fun(Node) -> spawn(?MODULE, map_in_put, [Node, Data3, Ref, self()]) end,
-      Nodes
+      fun(DstNode) ->
+              spawn(?MODULE, map_in_put, [DstNode, SrcNode, Data3, Ref, self()])
+      end,
+      DstNodes
      ),
-    [N, W] = artifact_config:get([n, w]),
     gather_in_put(Ref, N, W).
 
-map_in_put(Node, Data, Ref, Pid) ->
-    case artifact_rpc:put(Node, Data) of
+map_in_put(DstNode, SrcNode, Data, Ref, Pid) ->
+    case artifact_rpc:put(DstNode, SrcNode, Data) of
         {error, Reason} ->
-%            artifact_membership:check_node(Node),
+%            artifact_membership:check_node(DstNode),
             Pid ! {Ref, {error, Reason}};
         Other ->
             Pid ! {Ref, Other}
@@ -169,26 +187,27 @@ gather_in_put(Ref, N, W) ->
         {Ref, ok}     -> gather_in_put(Ref, N-1, W-1);
         {Ref, _Other} -> gather_in_put(Ref, N-1, W)
     after ?TIMEOUT ->
-            ?warning("gather_in_put/3: timeout"),
+            ?warning("gather_in_put has timed out"),
             {error, etimedout}
     end.
 
-coordinate_delete(Data) ->
-    {bucket, Bucket} = artifact_hash:find_bucket(Data#data.key),
-    {nodes,  Nodes } = artifact_hash:find_nodes(Bucket),
+coordinate_delete(SrcNode, Data, {N,_R,W}) ->
+    {ok, Bucket} = artifact_hash:find_bucket(Data#data.key),
+    {ok, DstNodes} = artifact_hash:find_nodes(Bucket),
     Data2 = Data#data{bucket=Bucket},
     Ref = make_ref(),
     lists:foreach(
-      fun(Node) -> spawn(?MODULE, map_in_delete, [Node, Data2, Ref, self()]) end,
-      Nodes
+      fun(DstNode) ->
+              spawn(?MODULE, map_in_delete, [DstNode, SrcNode, Data2, Ref, self()])
+      end,
+      DstNodes
      ),
-    [N, W] = artifact_config:get([n, w]),
     gather_in_delete(Ref, N, W, []).
 
-map_in_delete(Node, Data, Ref, Pid) ->
-    case artifact_rpc:delete(Node, Data) of
+map_in_delete(DstNode, SrcNode, Data, Ref, Pid) ->
+    case artifact_rpc:delete(DstNode, SrcNode, Data) of
         {error, Reason} ->
-%            artifact_membership:check_node(Node),
+%            artifact_membership:check_node(DstNode),
             Pid ! {Ref, {error, Reason}};
         Other ->
             Pid ! {Ref, Other}
@@ -210,6 +229,6 @@ gather_in_delete(Ref, N, W, Results) ->
     {Ref, _Other} ->
         gather_in_delete(Ref, N-1, W, Results)
     after ?TIMEOUT ->
-            ?warning("gather_in_delete/4: timeout"),
+            ?warning("gather_in_delete has timed out"),
         {error, etimedout}
     end.
