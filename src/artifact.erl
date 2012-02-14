@@ -1,47 +1,30 @@
-%   Artifact Database
-% -  Zephyr Pellerin -
-%     github - zv
-% the only requirement
-% of this software is 
-% that you keep it real
-% mixrank ------   2012
-
-%% @copyright 2012 Zephyr Pellerin
-
-%% @reference Amazon Dynamo
-
-%% @author Zephyr Pellerin <zephyr@mixrank.com>
-
-%% @doc A simple erlang distributed key value store.
+%
+% Artifact Data Store
+%
+% Copyright (c) 2012 Zephyr Pellerin
+% All rights reserved.
+%
+% Redistribution and use in source and binary forms are permitted
+% provided that the above copyright notice and this paragraph are
+% duplicated in all such forms and that any documentation,
+% advertising materials, and other materials related to such
+% distribution and use acknowledge that the software was developed
+% by Zephyr Pellerin.  My name cannot be used in endorsement of any product
+% derived from this software. Buy me a beer sometime if you liked this
+% THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
+% IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
+% WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. 
+%
 
 
 -module(artifact).
 -behaviour(application).
--author('Zephyr Pellerin <zephyr.pellerin@gmail.com>').
-
 
 -export([start/2, stop/1]).
 -export([start/0]).
 
-config([], Acc) ->
-    Acc;
-config([Key|Rest], Acc) ->
-    case application:get_env(artifact, Key) of
-        undefined   -> config(Rest, Acc);
-        {ok, Value} -> config(Rest, [{Key, Value}|Acc])
-    end.
-
 start(_Type, _Args) ->
-    Args = config([
-        logfile, hostname,
-        rpc_port, rpc_max_processes,
-        memcache_port, memcache_max_processes,
-        max_connections,
-        n, r, w,
-        number_of_buckets, number_of_virtual_nodes,
-        store, dets_dir, number_of_tables
-    ], []),
-    artifact_supervisor:start_link(Args).
+    artifact_sup:start_link(artifact_config:get_env()).
 
 stop(_State) ->
     ok.
