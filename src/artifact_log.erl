@@ -28,6 +28,8 @@
 
 -include("artifact.hrl").
 
+-record(state, {fd}).
+
 -define(SERVER, ?MODULE).
 
 start_link() ->
@@ -36,16 +38,16 @@ start_link() ->
 init(_Args) ->
     case artifact_config:get(logfile) of
         undefined ->
-            {ok, []};
+            {ok, #state{}};
         File ->
             case file:open(File, [write, append]) of
-                {ok, Fd} -> {ok, [{fd, Fd}]};
+                {ok, Fd} -> {ok, #state{fd=Fd}};
                 Error    -> Error
             end
     end.
 
 terminate(_Reason, State) ->
-    case proplists:get_value(fd, State) of
+    case State#state.fd of
         undefined -> ok;
         Fd        -> file:close(Fd)
     end.
@@ -58,11 +60,12 @@ log(Type, Pid, File, Line, Data, State) ->
             is_list(Data) -> lists:flatten(Data);
             true          -> Data
         end,
+    %% Hella format strings, sorry :( 
     Buf = io_lib:format(
         "~4..0w-~2..0w-~2..0w ~2..0w:~2..0w:~2..0w.~6..0w [~s] (~p) ~s:~w: ~p\n",
         [Year, Month, Day, Hour, Minute, Second, Usec, Type, Pid, File, Line, Data2]
     ),
-    case proplists:get_value(fd, State) of
+    case State#state.fd of
         undefined -> io:format(    "~s", [Buf]);
         Fd        -> io:format(Fd, "~s", [Buf])
     end.
