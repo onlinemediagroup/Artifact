@@ -16,7 +16,7 @@
 % WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. 
 %
 
--module(artifact_tcp_server_supervisor).
+-module(artifact_tcp_server_sup).
 -behaviour(supervisor).
 
 -export([start_link/4, stop/1]).
@@ -25,7 +25,7 @@
 
 -include("artifact.hrl").
 
-% External APIs
+%% External APIs
 start_link(Name, Mod, Args, Option) ->
     supervisor:start_link(Name, ?MODULE, [Name, Mod, Args, Option]).
 
@@ -37,15 +37,15 @@ stop(Name) ->
         _ -> not_started
     end.
 
-% Callbacks
+%% Callbacks
 init([Name, Mod, Args, Option]) ->
     case Mod:init(Args) of 
         {ok, State}    -> listen(State, Name, Mod, Option);
         {stop, Reason} -> Reason;
-        Other          -> Other % 'ignore' is contained.
+        Other          -> Other %% Includes 'ignore'.
     end.
 
-% Internal Functions
+%% Internal Functions
 listen(State, Name, Mod, Option) ->
     case gen_tcp:listen(
         Option#tcp_server_option.port,

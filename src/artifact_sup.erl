@@ -15,7 +15,8 @@
 % IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
 % WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. 
 %
--module(artifact_supervisor).
+
+-module(artifact_sup).
 -behaviour(supervisor).
     
 -export([start_link/1]).
