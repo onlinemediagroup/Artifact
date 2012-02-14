@@ -31,6 +31,12 @@ test_single: test_compile
 		-logdir test/log -cover test/artifact.coverspec \
 		-I$(ROOT)/include -pa $(ROOT)/ebin
 
+test_single_case: test_compile
+	mkdir -p test/log
+	${RUN_TEST_CMD} -suite $(SUITE) -case ${CASE}\
+		-logdir test/log -cover test/artifact.coverspec \
+		-I$(ROOT)/include -pa $(ROOT)/ebin
+
 docs:
 	erl -noshell -run edoc_run application "'artifact'" \
 		'"."' '[{def,{vsn, "$(artifact_VSN)"}}]'
