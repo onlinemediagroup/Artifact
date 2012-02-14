@@ -16,6 +16,7 @@
 % WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. 
 %
 
+
 -module(artifact_version).
 -behaviour(gen_server).
 
@@ -27,27 +28,23 @@
         ]).
 
 -include("artifact.hrl").
--record(state, {vector_clocks}).
 
 -define(SERVER, ?MODULE).
 -define(CAS_UNIQUE_BITS, 64).
+
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], _Opts = []).
 
 init(_Args) ->
-    NodeVClock = vclock:increment(artifact_config:get(node), vclock:fresh()),
-    {ok, #state{vector_clocks = NodeVClock}}.
+    {ok, []}.
 
 terminate(_Reason, _State) ->
     ok.
 
 update(Data, State) ->
-    NodeVClock =State#state.vector_clocks,
-    NewNodeVClock = vclock:increment(artifact_config:get(node), NodeVClock),
     NewDataVClock = vclock:increment(artifact_config:get(node), Data#data.vector_clocks),
-    NewState = State#state{vector_clocks = NewNodeVClock},
     {reply,
-     {ok, Data#data{last_modified=now(), vector_clocks=NewDataVClock}}, NewState }.
+     {ok, Data#data{last_modified=now(), vector_clocks=NewDataVClock}}, State }.
 
 do_order([], []) ->
     undefined;
@@ -55,11 +52,13 @@ do_order([], UniqList) ->
     UniqList;
 do_order([Data|Rest], UniqList) ->
     VClock = Data#data.vector_clocks,
-    case lists:any(fun(Other) -> vclock:descends(Other#data.vector_clocks, VClock) end, Rest) of
+    Comp = fun(Other) -> vclock:descends(Other#data.vector_clocks, VClock) end,
+    case lists:any(Comp, Rest) of
         true ->
             do_order(Rest, UniqList);
         _ ->
-            case lists:any(fun(Other) -> vclock:descends(Other#data.vector_clocks, VClock) end, UniqList) of
+            Comp2 = fun(Other) -> vclock:descends(Other#data.vector_clocks, VClock) end,
+            case lists:any(Comp2, UniqList) of
                 true ->
                     do_order(Rest, UniqList);
                 _ ->
@@ -67,25 +66,23 @@ do_order([Data|Rest], UniqList) ->
             end
     end.
 
-order(ListOfData, State) when is_list(ListOfData) ->
-    OrderedData = do_order(ListOfData, []),
+order(DataList, State) when is_list(DataList) ->
+    OrderedData = do_order(DataList, []),
     {reply, OrderedData, State};
 order(_Other, State) ->
     {reply, undefined, State}.
 
 
-%% TODO: raise error if length > 15(=2#1111)
-cas_unique(ListOfData) when length(ListOfData) > 2#1111 ->
-    {error, lists:flatten(io_lib:format("data list is too long (~p)", [length(ListOfData)]))};
-cas_unique(ListOfData) ->
-    Length = length(ListOfData),
+cas_unique(DataList) when length(DataList) > 2#1111 ->
+    {error, lists:flatten(io_lib:format("data list is too long (~p)", [length(DataList)]))};
+cas_unique(DataList) ->
+    Length = length(DataList),
     EachBits = trunc(60/Length),
-    %% TODO: make 128 contant 2008/11/06 by shino
     RestBits = 128- EachBits,
     cas_unique(lists:map(fun (Data) ->
                                  <<CheckSum:EachBits, _:RestBits>> = Data#data.checksum,
                                  CheckSum
-                         end, ListOfData),
+                         end, DataList),
                EachBits,
                Length,
                4).
@@ -102,8 +99,8 @@ handle_call(stop, _From, State) ->
     {stop, normal, stopped, State};
 handle_call({update, Data}, _From, State) ->
     update(Data, State);
-handle_call({order, ListOfData}, _From, State) ->
-    order(ListOfData, State).
+handle_call({order, DataList}, _From, State) ->
+    order(DataList, State).
 handle_cast(_Msg, State) ->
     {noreply, State}.
 handle_info(_Info, State) ->
@@ -115,5 +112,5 @@ stop() ->
     gen_server:call(?SERVER, stop).
 update(Data) ->
     gen_server:call(?SERVER, {update, Data}).
-order(ListOfData) ->
-    gen_server:call(?SERVER, {order, ListOfData}).
+order(DataList) ->
+    gen_server:call(?SERVER, {order, DataList}).
