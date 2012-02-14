@@ -35,15 +35,15 @@ start_link(Mod, Args) -> start_link(Mod, Args, #tcp_server_option{}).
 start_link(Mod, Args, Option) ->
     start_link({local, ?MODULE}, Mod, Args, Option).
 start_link(Name, Mod, Args, Option) ->
-    artifact_tcp_server_sup:start_link(Name, Mod, Args, Option).
+    artifact_tcp_server_supervisor:start_link(Name, Mod, Args, Option).
 
 stop() -> stop(?MODULE).
 stop(Name) ->
-    artifact_tcp_server_sup:stop(Name).
+    artifact_tcp_server_supervisor:stop(Name).
 
 info(Key) -> info(?MODULE, Key).
 info(Name, Key) ->
     artifact_tcp_server_monitor:info(
-        artifact_tcp_server_sup:build_monitor_name(Name), Key
+        artifact_tcp_server_supervisor:build_monitor_name(Name), Key
     ).
 

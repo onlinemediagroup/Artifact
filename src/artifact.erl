@@ -14,11 +14,11 @@
 
 %% @doc A simple erlang distributed key value store.
 
--author('Zephyr Pellerin <zephyr.pellerin@gmail.com>').
-
 
 -module(artifact).
 -behaviour(application).
+-author('Zephyr Pellerin <zephyr.pellerin@gmail.com>').
+
 
 -export([start/2, stop/1]).
 -export([start/0]).
