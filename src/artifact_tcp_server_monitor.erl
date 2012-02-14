@@ -15,6 +15,7 @@
 % IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
 % WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. 
 %
+
 -module(artifact_tcp_server_monitor).
 -behaviour(gen_server).
 
@@ -32,7 +33,6 @@
 
 -include("artifact.hrl").
 
-% External APIs
 start_link(Name) ->
     gen_server:start_link(Name, ?MODULE, [], []).
 
@@ -51,7 +51,6 @@ decrement(ServerRef, Pid) ->
 info(ServerRef, Key) ->
     gen_server:call(ServerRef, {info, Key}).
 
-% Callbacks
 init(_Args) ->
     {ok, {_MonitorRefs = [], _Pids = []}}.
 
@@ -95,7 +94,6 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-% Internal Functions
 state_to_info({_MonitorRefs, Pids}, curr_connections) ->
     length(Pids); 
 

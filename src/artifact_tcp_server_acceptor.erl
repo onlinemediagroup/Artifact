@@ -15,6 +15,7 @@
 % IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
 % WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. 
 %
+
 -module(artifact_tcp_server_acceptor).
 
 -export([start_link/6]).
@@ -22,7 +23,6 @@
 
 -include("artifact.hrl").
 
-% External APIs
 start_link({Dest, Name}, ListenSocket, State, MonitorName, Mod, Option) ->
     {ok, Pid} = proc_lib:start_link(
         ?MODULE, init,
@@ -34,13 +34,11 @@ start_link({Dest, Name}, ListenSocket, State, MonitorName, Mod, Option) ->
     end,
     {ok, Pid}.
 
-% Callbacks
 init(Parent, ListenSocket, State, MonitorName, Mod, Option) ->
     proc_lib:init_ack(Parent, {ok, self()}),
     artifact_tcp_server_monitor:register(MonitorName, self()),
     accept(ListenSocket, State, MonitorName, Mod, Option).
 
-% Internal Functions
 accept(ListenSocket, State, MonitorName, Mod, Option) ->
     case gen_tcp:accept(
         ListenSocket, Option#tcp_server_option.accept_timeout
