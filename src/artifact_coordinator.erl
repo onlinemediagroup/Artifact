@@ -15,7 +15,6 @@
 % IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
 % WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. 
 %
-
 -module(artifact_coordinator).
 
 -export([route/2]).
@@ -27,12 +26,11 @@
 
 route(SrcNode, {_Type, Data, _Quorum} = Request) ->
     Ref = make_ref(),
-    %% The application should exit with a final 0x80 switch.
     spawn(?MODULE, start_route, [SrcNode, Request, self(), Ref]),
     receive
         {Ref, Result} -> Result
     after ?TIMEOUT ->
-            ?warning(io_lib:format("Routed IO element route(~p) has timed out", [Data#data.key])),
+            ?warning(io_lib:format("route(~p): timeout", [Data#data.key])),
             []
     end.
 
@@ -45,7 +43,6 @@ start_route(SrcNode, {_Type, Data, _Quorum} = Request, Pid, Ref) ->
         end,
     Pid ! {Ref, Results}.
 
-%% Hack the pl8
 dispatch(SrcNode, {Type, Data, Quorum} = _Request) ->
     case Type of
         get    -> coordinate_get(SrcNode, Data, Quorum);
@@ -56,7 +53,6 @@ dispatch(SrcNode, {Type, Data, Quorum} = _Request) ->
 
 do_route([], _SrcNode, _Request) ->
     {error, ebusy};
-
 do_route([DstNode|RestNodes], SrcNode, {_Type, Data, _Quorum} = Request) ->
     case artifact_rpc:route(DstNode, SrcNode, Request) of
         {error, Reason} ->
@@ -80,13 +76,11 @@ coordinate_get(SrcNode, Data, {N,R,_W}) ->
      ),
     case gather_in_get(Ref, N, R, []) of
         ListOfData when is_list(ListOfData) ->
-            %% Todo - Writeback if multiple collisions are detected. 
             InternalNum = sets:size(
                             sets:from_list(
                               lists:map(fun(E) -> E#data.vector_clocks end,
                                        ListOfData))),
             ReconciledList = artifact_version:order(ListOfData),
-            %% The reconciliation process should be pretty straitforward 
             if
                 InternalNum > 1 ->
                     artifact_stat:incr_unreconciled_get(
@@ -102,7 +96,7 @@ map_in_get(DstNode, SrcNode, Data, Ref, Pid) ->
     case artifact_rpc:get(DstNode, SrcNode, Data) of
         {error, Reason} ->
 %            artifact_membership:check_node(DstNode),
-            Pid ! {Ref, {error, Reason}}
+            Pid ! {Ref, {error, Reason}};
         Other ->
             Pid ! {Ref, Other}
     end.
@@ -120,21 +114,9 @@ gather_in_get(Ref, N, R, Results) ->
         {Ref, _Other} ->
             gather_in_get(Ref, N-1, R, Results)
     after ?TIMEOUT ->
-            ?warning("gathering reference results has timed out"),
+            ?warning("gather_in_get/4: timeout"),
             Results
     end.
-
-
-%%map_in_delete(DstNode, SrcNode, Data, Ref, Pid) ->
-%%    case artifact_rpc:delete(DstNode, SrcNode, Data) of
-%%        {error, Reason} ->
-%%%            artifact_membership:check_node(DstNode),
-%%            Pid ! {Ref, {error, Reason}};
-%%        Other ->
-%%            Pid ! {Ref, Other}
-%%    end.
-%%
-
 
 coordinate_put(SrcNode, Data, {N,_R,W}) ->
     Key   = Data#data.key,
@@ -187,7 +169,7 @@ gather_in_put(Ref, N, W) ->
         {Ref, ok}     -> gather_in_put(Ref, N-1, W-1);
         {Ref, _Other} -> gather_in_put(Ref, N-1, W)
     after ?TIMEOUT ->
-            ?warning("gather_in_put has timed out"),
+            ?warning("gather_in_put/3: timeout"),
             {error, etimedout}
     end.
 
@@ -229,6 +211,6 @@ gather_in_delete(Ref, N, W, Results) ->
     {Ref, _Other} ->
         gather_in_delete(Ref, N-1, W, Results)
     after ?TIMEOUT ->
-            ?warning("gather_in_delete has timed out"),
+            ?warning("gather_in_delete/4: timeout"),
         {error, etimedout}
     end.
