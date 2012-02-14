@@ -16,13 +16,15 @@
 % WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. 
 %
 
+
 -module(artifact_memcache).
 -behaviour(artifact_tcp_server).
 
 -export([start_link/0, stop/0]).
--export([init/1, handle_call/3]).
-
+-export([init/1, handle_call/3]).  
 -include("artifact.hrl").
+
+-record(state, {node, quorum}).
 
 -define(MEMCACHE_TIMEOUT, ?TIMEOUT).
 
@@ -39,7 +41,11 @@ start_link() ->
 
 stop() -> artifact_tcp_server:stop(?MODULE).
 
-init(_Args) -> {ok, {}}.
+init(_Args) ->
+    {ok, #state{
+       node   = artifact_config:get(node),
+       quorum = artifact_config:get(quorum)
+      }}.
 
 handle_call(Socket, Data, State) ->
     dispatch(Socket, string:tokens(binary_to_list(Data), " \r\n"), State).
@@ -56,23 +62,26 @@ dispatch(Socket, ["set", _Key, _Flags, "0", _Bytes] = Data, State) ->
     Result;
 
 dispatch(_Socket, ["set", _Key, _Flags, _Exptime, _Bytes], State) ->
-    {reply, <<"CLIENT_ERROR Exptime must be zero.\r\n">>, State};
+    {reply, <<"client error - exponential time must be zero.\r\n">>, State};
 
 dispatch(_Socket, ["delete", Key], State) ->
-    case artifact_coordinator:route({delete, #data{key=Key}}) of
-        ok        -> {reply, <<"DELETED\r\n">>, State};
-        undefined -> {reply, <<"NOT_FOUND\r\n">>, State};
+    case artifact_coordinator:route(
+           State#state.node,
+           {delete, #data{key = Key}, State#state.quorum}
+          ) of
+        ok        -> {reply, <<"Annihilated\r\n">>, State};
+        undefined -> {reply, <<"Unfound\r\n">>, State};
         _Other    ->
-            send_error_and_close(State, "Failed to delete.")
+            send_error_and_close(State, "Failed to annihilate.")
     end;
 
 dispatch(_Socket, ["delete", Key, "0"], State) ->
     dispatch(_Socket, ["delete", Key], State);
 dispatch(_Socket, ["delete", _Key, _Time], State) ->
-    {reply, <<"CLIENT_ERROR Time must be zero.\r\n">>, State};
+    {reply, <<"client error - Time must be zero.\r\n">>, State};
 
 dispatch(_Socket, ["delete", _Key, _Time, "noreply"], State) ->
-    {reply, <<"CLIENT_ERROR noreply not supported.\r\n">>, State};
+    {reply, <<"client error - noreply not supported.\r\n">>, State};
 
 dispatch(_Socket, ["stats"], State) ->
     Response =
@@ -90,15 +99,19 @@ dispatch(_Socket, ["version"], State) ->
             {ok, V} -> V;
             _       -> "0"
         end,
-    {reply, "VERSION " ++ Version ++ "\r\n", State};
+    {reply, "Version " ++ Version ++ "\r\n", State};
 
-dispatch(_Socket, ["quit"], _State) -> quit;
+dispatch(_Socket, ["quit"], State) ->
+    {close, State};
 
 dispatch(_Socket, _Unknown, State) ->
-    {reply, <<"ERROR\r\n">>, State}.
+    {reply, <<"Dispatch error\r\n">>, State}.
 
 do_get(Key, State, WithCasUnique) ->
-    case artifact_coordinator:route({get, #data{key=Key}}) of
+    case artifact_coordinator:route(
+           State#state.node,
+           {get, #data{key = Key}, State#state.quorum}
+          ) of
         Data when is_list(Data) ->
             {ok, CasUniqueInBinary} = artifact_version:cas_unique(Data),
             Response = get_response(Data, WithCasUnique, CasUniqueInBinary),
@@ -108,7 +121,7 @@ do_get(Key, State, WithCasUnique) ->
         undefined ->
             {reply, <<"END\r\n">>, State};
         _Other ->
-            send_error_and_close("Failed to read.", State)
+            send_error_and_close("read failure", State)
     end.
 
 get_response(Data, WithCasUnique, CasUnique) ->
@@ -132,7 +145,8 @@ recv_set_data(Socket, ["set", Key, Flags, "0", Bytes], State) ->
         {ok, Value} ->
             gen_tcp:recv(Socket, 2, ?MEMCACHE_TIMEOUT),
             case artifact_coordinator:route(
-                {put, #data{key=Key, flags=Flags, value=Value}}
+                   State#state.node,
+                   {put, #data{key = Key, flags = Flags, value = Value}, State#state.quorum}
             ) of
                 ok ->
                     gen_tcp:send(Socket, <<"STORED\r\n">>),
@@ -148,7 +162,7 @@ recv_set_data(Socket, ["set", Key, Flags, "0", Bytes], State) ->
 
 send_error_and_close(Message, State) ->
     ?warning(io_lib:format("send_error_and_close/2: ~p", [Message])),
-    {close, ["SERVER_ERROR ", Message, "\r\n"], State}.
+    {close, ["Danger Will Robinson! Server Error:  ", Message, "\r\n"], State}.
 
 cas_unique(CasUniqueInBinary) ->
     <<HashedValue:64/integer>> = CasUniqueInBinary,
